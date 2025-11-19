@@ -122,7 +122,7 @@ def load_model():
     def _try_pickle(path):
         try:
             with open(path, 'rb') as f:
-                return pickle.load(f)
+                return pickle.load(f), None
         except Exception as e:
             return None, e
 
