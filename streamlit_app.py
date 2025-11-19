@@ -111,17 +111,86 @@ st.markdown("""
 
 @st.cache_resource
 def load_model():
-    """Load the trained model and preprocessor"""
+    """Load the trained model and preprocessor with multiple fallbacks.
+
+    This tries `pickle` first, then `joblib`, then `dill` (if available).
+    When unpickling fails with an AttributeError it's often due to a
+    library/version mismatch (for example a different scikit-learn
+    version). The fallback attempts help in a few common scenarios and
+    the detailed error message provides guidance for remediation.
+    """
+    def _try_pickle(path):
+        try:
+            with open(path, 'rb') as f:
+                return pickle.load(f)
+        except Exception as e:
+            return None, e
+
+    def _try_joblib(path):
+        try:
+            from joblib import load as _jl
+            return _jl(path), None
+        except Exception as e:
+            return None, e
+
+    def _try_dill(path):
+        try:
+            import dill
+            with open(path, 'rb') as f:
+                return dill.load(f), None
+        except Exception as e:
+            return None, e
+
+    # Paths
+    model_path = 'models/adaboost_model.pkl'
+    preproc_path = 'models/preprocessor.pkl'
+    feature_info_path = 'models/feature_info.pkl'
+
+    # Helper to attempt multiple loaders and capture errors
+    def _load_with_fallback(path):
+        loaders = [_try_pickle, _try_joblib, _try_dill]
+        final_err = None
+        for loader in loaders:
+            result, err = loader(path)
+            if result is not None:
+                return result, None
+            final_err = err
+        return None, final_err
+
+    # Ensure files exist first
     try:
-        with open('models/adaboost_model.pkl', 'rb') as f:
-            model = pickle.load(f)
-        with open('models/preprocessor.pkl', 'rb') as f:
-            preprocessor = pickle.load(f)
-        with open('models/feature_info.pkl', 'rb') as f:
-            feature_info = pickle.load(f)
+        if not os.path.exists(model_path) or not os.path.exists(preproc_path) or not os.path.exists(feature_info_path):
+            raise FileNotFoundError('One or more model files are missing in the `models/` directory.')
+
+        model, err_model = _load_with_fallback(model_path)
+        if model is None:
+            raise RuntimeError(f"Failed to load model file '{model_path}': {err_model}")
+
+        preprocessor, err_pre = _load_with_fallback(preproc_path)
+        if preprocessor is None:
+            raise RuntimeError(f"Failed to load preprocessor file '{preproc_path}': {err_pre}\n" \
+                               "Common causes: scikit-learn version mismatch or missing custom classes.\n" \
+                               "Remedies: re-save the preprocessor using `joblib.dump(preprocessor, 'models/preprocessor.pkl')` " \
+                               "or add `dill` to your environment and re-save with `dill.dump(preprocessor, open(...,'wb'))`.")
+
+        feature_info, err_feat = _load_with_fallback(feature_info_path)
+        if feature_info is None:
+            raise RuntimeError(f"Failed to load feature info file '{feature_info_path}': {err_feat}")
+
         return model, preprocessor, feature_info
+
     except FileNotFoundError as e:
         st.error(f"Model files not found. Please run the notebook cell to save the model first. Error: {e}")
+        return None, None, None
+    except Exception as e:
+        # Provide a helpful, non-sensitive message to the app user and
+        # a more detailed hint for the developer/operator.
+        st.error("Error loading model artifacts. See app logs for full details.")
+        st.caption("If you are the app maintainer: ensure model files were saved with compatible library versions.\n" \
+                   "Try re-saving `preprocessor.pkl` with `joblib.dump` or adding `dill` to `requirements.txt` and re-saving.")
+        # Log the exception to the console so Streamlit logs capture it
+        import traceback
+        traceback.print_exc()
         return None, None, None
 
 def predict_refund(model, preprocessor, input_data):
